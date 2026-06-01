@@ -1289,14 +1289,29 @@ public final class HttpUtils {
 
 		NGSILDOperationResult result = new NGSILDOperationResult(operationType, entityId, remoteHost.tenant());
 		if (failure != null) {
+			String responseContent = response != null ? response.bodyAsString() : "No response body";
+			logger.error(
+					"Request failed to remote host: {} for entity: {} with attrs: {}. Error: {}. Response body: {}",
+					remoteHost.host(), entityId, attrs, failure.getMessage(), responseContent, failure);
 			result.addFailure(new ResponseException(ErrorType.UnprocessableContextSourceRegistration,
 					failure.getMessage(), remoteHost, attrs));
 		} else {
 			int statusCode = response.statusCode();
 			if (ArrayUtils.contains(integers, statusCode)) {
+				logger.debug("Successful response from remote host: {} for entity: {} with attrs: {}. Status: {}. Response body: {}",
+						remoteHost.host(), entityId, attrs, statusCode, response.bodyAsString());
 				result.addSuccess(new CRUDSuccess(remoteHost, attrs));
 			} else if (statusCode == 207) {
-				JsonObject jsonObj = response.bodyAsJsonObject();
+				JsonObject jsonObj = null;
+				try {
+					jsonObj = response.bodyAsJsonObject();
+				} catch (DecodeException e) {
+					logger.error("Failed to parse 207 response as JSON from remote host: {} for entity: {} with attrs: {}. Status: {}. Raw response body: {}", 
+							remoteHost.host(), entityId, attrs, statusCode, response.bodyAsString(), e);
+					result.addFailure(new ResponseException(500, NGSIConstants.ERROR_UNEXPECTED_RESULT,
+							NGSIConstants.ERROR_UNEXPECTED_RESULT_NULL_TITLE, statusCode, remoteHost, attrs));
+					return result;
+				}
 				if (jsonObj != null) {
 					NGSILDOperationResult remoteResult;
 					try {
@@ -1311,8 +1326,19 @@ public final class HttpUtils {
 
 			} else {
 
-				JsonObject responseBody = response.bodyAsJsonObject();
+				JsonObject responseBody = null;
+				try {
+					responseBody = response.bodyAsJsonObject();
+				} catch (DecodeException e) {
+					logger.error("Failed to parse response as JSON from remote host: {} for entity: {} with attrs: {}. Status: {}. Raw response body: {}", 
+							remoteHost.host(), entityId, attrs, statusCode, response.bodyAsString(), e);
+					result.addFailure(new ResponseException(500, NGSIConstants.ERROR_UNEXPECTED_RESULT,
+							NGSIConstants.ERROR_UNEXPECTED_RESULT_NULL_TITLE, statusCode, remoteHost, attrs));
+					return result;
+				}
 				if (responseBody == null) {
+					logger.warn("Response body is null from remote host: {} for entity: {} with attrs: {}. Status: {}. Raw response body: {}", 
+							remoteHost.host(), entityId, attrs, statusCode, response.bodyAsString());
 					result.addFailure(new ResponseException(500, NGSIConstants.ERROR_UNEXPECTED_RESULT,
 							NGSIConstants.ERROR_UNEXPECTED_RESULT_NULL_TITLE, statusCode, remoteHost, attrs));
 
@@ -1320,11 +1346,15 @@ public final class HttpUtils {
 					if (!responseBody.containsKey(NGSIConstants.ERROR_TYPE)
 							|| !responseBody.containsKey(NGSIConstants.ERROR_TITLE)
 							|| !responseBody.containsKey(NGSIConstants.ERROR_DETAIL)) {
+						logger.debug("Response body from remote host: {} for entity: {} with attrs: {}. Status: {}. Content: {}", 
+								remoteHost.host(), entityId, attrs, statusCode, responseBody.encode());
 						result.addFailure(
 								new ResponseException(statusCode, responseBody.getString(NGSIConstants.ERROR_TYPE),
 										responseBody.getString(NGSIConstants.ERROR_TITLE),
 										responseBody.getMap().get(NGSIConstants.ERROR_DETAIL), remoteHost, attrs));
 					} else {
+						logger.debug("Unexpected response body structure from remote host: {} for entity: {} with attrs: {}. Status: {}. Content: {}", 
+								remoteHost.host(), entityId, attrs, statusCode, responseBody.encode());
 						result.addFailure(new ResponseException(500, NGSIConstants.ERROR_UNEXPECTED_RESULT,
 								NGSIConstants.ERROR_UNEXPECTED_RESULT_NOT_EXPECTED_BODY_TITLE, responseBody.getMap(),
 								remoteHost, attrs));

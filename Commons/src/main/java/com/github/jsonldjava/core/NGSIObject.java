@@ -239,7 +239,6 @@ class NGSIObject {
 
 	NGSIObject addType(String type) {
 		this.types.add(type);
-		System.err.println("DEBUG NGSIObject.addType() :: type = " + type);
 		if (NGSIConstants.NGSI_LD_PROPERTY.equals(type)) {
 			this.isProperty = true;
 		} else if (NGSIConstants.NGSI_LD_RELATIONSHIP.equals(type)) {

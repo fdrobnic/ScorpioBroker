@@ -290,7 +290,7 @@ public class JsonLdApi {
 						switch (((List<String>) expandedValue).get(0)) {
 							case NGSIConstants.NGSI_LD_PROPERTY:
 								isProperty = true;
-
+								break;
 							case NGSIConstants.NGSI_LD_GEOPROPERTY:
 								isGeoProperty = true;
 								break;

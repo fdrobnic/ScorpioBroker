@@ -239,6 +239,7 @@ class NGSIObject {
 
 	NGSIObject addType(String type) {
 		this.types.add(type);
+		System.err.println("DEBUG NGSIObject.addType() :: type = " + type);
 		if (NGSIConstants.NGSI_LD_PROPERTY.equals(type)) {
 			this.isProperty = true;
 		} else if (NGSIConstants.NGSI_LD_RELATIONSHIP.equals(type)) {
@@ -259,6 +260,18 @@ class NGSIObject {
 			this.isLocalOnly = true;
 		} else if (NGSIConstants.NGSI_LD_JSON_PROPERTY.equals(type)) {
 			this.isJsonProperty = true;
+		} else if (type != null) {
+			// Some IoT agents register custom attribute types such as "Command",
+			// or use compact terms that expand to non-standard IRIs. Treat
+			// any type that contains the token "command" (case-insensitive)
+			// or the generic NGSI attribute type as a Property so command
+			// attributes are accepted by validation.
+			String lower = type.toLowerCase();
+			System.err.println("DEBUG NGSIObject.addType() :: Custom type detected. lower = " + lower + ", checking for 'command' or NGSI_LD_ATTRIBUTE");
+			if (lower.contains("command") || NGSIConstants.NGSI_LD_ATTRIBUTE.equals(type)) {
+				this.isProperty = true;
+				System.err.println("DEBUG NGSIObject.addType() :: Setting isProperty = true for custom command type");
+			}
 		}
 
 		return this;
@@ -718,6 +731,9 @@ class NGSIObject {
 		if (fromHasValue) {
 			return;
 		}
+		System.err.println("DEBUG validateAttribute() :: expandedProperty=" + expandedProperty + ", activeProperty=" + activeProperty 
+			+ ", isProperty=" + isProperty + ", isRelationship=" + isRelationship + ", isGeoProperty=" + isGeoProperty 
+			+ ", isDateTime=" + isDateTime + ", isLanguageProperty=" + isLanguageProperty + ", isScalar=" + isScalar);
 		if (isScalar) {
 			if (Constants.allowedDateTimes.get(payloadType).contains(expandedProperty)) {
 				validateDateTime(activeProperty);
@@ -732,6 +748,7 @@ class NGSIObject {
 				return;
 			}
 			if (!Constants.allowedScalars.get(payloadType).contains(expandedProperty)) {
+				System.err.println("DEBUG validateAttribute() :: Scalar validation failed for expandedProperty=" + expandedProperty);
 				throw new ResponseException(ErrorType.BadRequestData,
 						"The key " + activeProperty + " is an invalid entry.");
 			}
@@ -746,6 +763,8 @@ class NGSIObject {
 			if (!isProperty && !isRelationship && !isGeoProperty && !isDateTime && !isLanguageProperty
 					&& !isVocabProperty && !isListProperty && !isListRelationship && !isLocalOnly && !isJsonProperty
 					&& !hasObject) {
+				System.err.println("DEBUG validateAttribute() :: No valid attribute type for expandedProperty=" + expandedProperty 
+					+ ", activeProperty=" + activeProperty + ". All type flags are false or hasObject is false");
 				throw new ResponseException(ErrorType.BadRequestData,
 						"The key " + activeProperty + " is an invalid entry.");
 			}

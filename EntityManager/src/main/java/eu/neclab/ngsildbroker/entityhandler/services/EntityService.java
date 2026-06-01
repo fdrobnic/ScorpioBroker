@@ -289,18 +289,24 @@ public class EntityService implements CSourceHandler {
 			MultiMap toFrwd = HttpUtils.getHeadToFrwd(remoteHost.headers(), headersFromReq);
 			if (remoteHost.canDoSingleOp()) {
 				unis.add(prepareSplitUpEntityForSending(expanded, context).onItem().transformToUni(compacted -> {
+					Object payloadToSend = compacted.get(context.compactIri(request.getAttribName()));
+					if (payloadToSend == null) {
+						payloadToSend = compacted;
+					}
+					logger.debug("Sending remote PATCH to {}/attrs/{} for entity {} with payload: {}",
+ 						remoteHost.host(), context.compactIri(request.getAttribName()), entityId, payloadToSend);
 					String body;
 					try {
-						body = JsonUtils.toString(compacted);
+						body = JsonUtils.toString(payloadToSend);
 					} catch (IOException e) {
-						return Uni.createFrom().item(new NGSILDOperationResult(AppConstants.APPEND_REQUEST,
-								entityId, remoteHost.tenant()));
+						return Uni.createFrom().item(new NGSILDOperationResult(AppConstants.PARTIAL_UPDATE_REQUEST,
+									entityId, remoteHost.tenant()));
 					}
 
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/" + entityId
-											+ "/attrs/" + request.getAttribName(),
+											+ "/attrs/" + context.compactIri(request.getAttribName()),
 									tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
@@ -995,6 +1001,7 @@ public class EntityService implements CSourceHandler {
 											regHost.cSourceId(), regEntry.replaceAttrs(), false, regEntry.regMode(),
 											false,
 											regEntry.queryEntityMap(), regEntry.host().cSourceAlias());
+									break;
 								case AppConstants.PARTIAL_UPDATE_REQUEST:
 									host = new RemoteHost(regHost.host(), regHost.tenant(), regHost.headers(),
 											regHost.cSourceId(), regEntry.updateAttrs(), false, regEntry.regMode(),

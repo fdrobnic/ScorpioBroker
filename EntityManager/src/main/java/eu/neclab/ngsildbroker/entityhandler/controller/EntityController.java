@@ -264,7 +264,7 @@ public class EntityController {// implements EntityHandlerInterface {
 		// HttpUtils.getTenant(req)));
 		// }
 
-		return HttpUtils.expandBody(req, body, AppConstants.ENTITY_UPDATE_PAYLOAD, ldService).onItem()
+		return HttpUtils.expandBody(req, body, AppConstants.ENTITY_ATTRS_UPDATE_PAYLOAD, ldService).onItem()
 				.transformToUni(tuple -> {
 					String expAttrib = tuple.getItem1().expandIri(attrib, false, true, null, null);
 					logger.debug("update entry :: started");

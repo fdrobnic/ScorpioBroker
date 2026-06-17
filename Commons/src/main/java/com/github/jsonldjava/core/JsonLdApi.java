@@ -1585,8 +1585,12 @@ public class JsonLdApi {
 									throw new JsonLdError(Error.INVALID_TYPE_VALUE,
 											"@type value must be a string or array of strings");
 								}
-								String type = activeCtx.expandIri((String) v, true, true, null, null);
+								String rawType = (String) v;
+								String type = activeCtx.expandIri(rawType, true, true, null, null);
 								((List<String>) expandedValue).add(type);
+								if ((rawType != null && rawType.toLowerCase().contains("command")) || (type != null && type.toLowerCase().contains("command")) || NGSIConstants.NGSI_LD_ATTRIBUTE.equals(type)) {
+									System.err.println("DEBUG JsonLdApi :: command-like @type raw=" + rawType + " expanded=" + type + " for expandedProperty=" + expandedProperty);
+								}
 								ngsiElement.addType(type);
 								// }
 							}

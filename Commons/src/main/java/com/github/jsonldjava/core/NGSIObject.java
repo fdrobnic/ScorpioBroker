@@ -237,8 +237,38 @@ class NGSIObject {
 		return this;
 	}
 
+	private String getEntityId() {
+		NGSIObject current = this;
+		while (current != null) {
+			if (current.id != null) {
+				return current.id;
+			}
+			current = current.parent;
+		}
+		return null;
+	}
+
+	private String getAttributeName() {
+		NGSIObject current = this;
+		while (current != null) {
+			if (current.expandedProperty != null && !current.expandedProperty.equals("@type")) {
+				return current.expandedProperty;
+			}
+			current = current.parent;
+		}
+		return expandedProperty; // Fallback to this object's expandedProperty
+	}
+
 	NGSIObject addType(String type) {
 		this.types.add(type);
+		String entityId = getEntityId();
+		String attributeName = getAttributeName();
+		String lower = type == null ? null : type.toLowerCase();
+		boolean isCommandType = lower != null && lower.contains("command");
+		boolean isGenericAttributeType = NGSIConstants.NGSI_LD_ATTRIBUTE.equals(type);
+		if (isCommandType || isGenericAttributeType) {
+			System.err.println("DEBUG NGSIObject.addType() :: command-like type detected. type = " + type + ", entity id = " + entityId + ", attribute = " + attributeName);
+		}
 		if (NGSIConstants.NGSI_LD_PROPERTY.equals(type)) {
 			this.isProperty = true;
 		} else if (NGSIConstants.NGSI_LD_RELATIONSHIP.equals(type)) {
@@ -259,17 +289,10 @@ class NGSIObject {
 			this.isLocalOnly = true;
 		} else if (NGSIConstants.NGSI_LD_JSON_PROPERTY.equals(type)) {
 			this.isJsonProperty = true;
-		} else if (type != null) {
-			// Some IoT agents register custom attribute types such as "Command",
-			// or use compact terms that expand to non-standard IRIs. Treat
-			// any type that contains the token "command" (case-insensitive)
-			// or the generic NGSI attribute type as a Property so command
-			// attributes are accepted by validation.
-			String lower = type.toLowerCase();
-			System.err.println("DEBUG NGSIObject.addType() :: Custom type detected. lower = " + lower + ", checking for 'command' or NGSI_LD_ATTRIBUTE");
-			if (lower.contains("command") || NGSIConstants.NGSI_LD_ATTRIBUTE.equals(type)) {
+		} else {
+			if (isCommandType || isGenericAttributeType) {
 				this.isProperty = true;
-				System.err.println("DEBUG NGSIObject.addType() :: Setting isProperty = true for custom command type");
+				System.err.println("DEBUG NGSIObject.addType() :: Setting isProperty = true for custom command type: " + type + ", entity id = " + entityId + ", attribute = " + attributeName);
 			}
 		}
 

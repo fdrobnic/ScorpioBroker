@@ -206,7 +206,7 @@ public class SubscriptionInfoDAO {
 	}
 
 	public Uni<RowSet<Row>> getSubscription(String tenant, String subscriptionId) {
-		String sql = "SELECT subscription, contexts.body as contextBody, contexts.id FROM subscriptions LEFT JOIN contexts ON subscriptions.context = contexts.id WHERE subscription_id=$1";
+		String sql = "SELECT subscription FROM subscriptions WHERE subscription_id=$1";
 		Tuple tuple = Tuple.of(subscriptionId);
 		return connectionManager.executeQuery(tenant, sql, tuple, false);
 	}
@@ -243,6 +243,7 @@ public class SubscriptionInfoDAO {
 				.transformToUni(t -> Uni.createFrom().voidItem());
 	}
 
+	@SuppressWarnings("unchecked")
 	public Uni<List<Tuple4<String, Map<String, Object>, String, Map<String, Object>>>> loadSubscriptions() {
 
 		return connectionManager.executeQuery(null, "select tenant_id from tenant", null, false).onItem()
@@ -251,60 +252,109 @@ public class SubscriptionInfoDAO {
 					rows.forEach(row -> {
 
 						unis.add(connectionManager.executeQuery(row.getString(0), "SELECT '" + row.getString(0)
-								+ "', subscriptions.subscription, context as contextId, contexts.body as contextBody FROM subscriptions LEFT JOIN contexts ON subscriptions.context = contexts.id",
-								null, false));
+								+ "', subscription, context FROM subscriptions", null, false));
 					});
 					unis.add(connectionManager.executeQuery(null, "SELECT '" + AppConstants.INTERNAL_NULL_KEY
-							+ "', subscriptions.subscription, context as contextId, contexts.body as contextBody FROM subscriptions LEFT JOIN contexts ON subscriptions.context = contexts.id",
-							null, false));
+							+ "', subscription, context FROM subscriptions", null, false));
 					return Uni.combine().all().unis(unis).with(list -> {
 						List<Tuple4<String, Map<String, Object>, String, Map<String, Object>>> result = new ArrayList<>();
-						for (Object obj : list) {
-							@SuppressWarnings("unchecked")
-							RowSet<Row> rowset = (RowSet<Row>) obj;
-							rowset.forEach(row -> {
-								String tenant = row.getString(0);
-								Map<String, Object> sub = row.getJsonObject(1).getMap();
-								String ctxId = row.getString(2);
-								JsonObject ctx = row.getJsonObject(3);
-								Map<String, Object> ctxMap;
-								if (ctx == null) {
-									logger.error("Failed to read context for subscription "
-											+ sub.get(NGSIConstants.JSON_LD_ID) + " on tenant " + tenant);
-									ctxMap = null;
-								} else {
-									ctxMap = ctx.getMap();
-								}
-								result.add(Tuple4.of(tenant, sub, ctxId, ctxMap));
-							});
-						}
-						return result;
-					});
+						return connectionManager.executeQuery(null,
+								"select jsonb_object_agg(id,body) as col from public.contexts", null, false).onItem()
+								.transform(rows1 -> {
+									JsonObject jsonContexts = null;
+									if (rows1.size() > 0) {
+										jsonContexts = rows1.iterator().next().getJsonObject(0);
+									}
+									Map<String, Object> mapContexts = jsonContexts == null ? null : jsonContexts.getMap();
+									for (Object obj : list) {
+										RowSet<Row> rowset = (RowSet<Row>) obj;
+										rowset.forEach(row -> {
+											String tenant = row.getString(0);
+											Map<String, Object> sub = row.getJsonObject(1).getMap();
+											String ctxId = row.getString(2);
+											result.add(Tuple4.of(tenant, sub, ctxId,
+													getContextFromDefaultContexts(mapContexts, ctxId, sub, tenant)));
+										});
+									}
+									return result;
+								});
+					}).onItem().transformToUni(x -> x);
 				});
 
 	}
 
 	public Uni<Tuple3<Map<String, Object>, String, Map<String, Object>>> loadSubscription(String tenant, String id) {
-		return connectionManager.executeQuery(tenant, "select tenant_id from tenant", Tuple.of(id), false).onItem()
-				.transform(rows -> {
+		return connectionManager.executeQuery(tenant,
+				"SELECT subscription, context FROM subscriptions WHERE subscription_id=$1", Tuple.of(id), false)
+				.onItem().transformToUni(rows -> {
 					if (rows.size() == 0) {
 						Tuple3<Map<String, Object>, String, Map<String, Object>> r = Tuple3.of(null, null, null);
-						return r;
+						return Uni.createFrom().item(r);
 					}
 					Row first = rows.iterator().next();
 					Map<String, Object> subscription = first.getJsonObject(0).getMap();
 					String contextId = first.getString(1);
-					JsonObject ctx = first.getJsonObject(2);
-					Map<String, Object> ctxMap;
-					if (ctx == null) {
-						logger.error("Failed to read context for subscription " + id + " on tenant " + tenant);
-						ctxMap = null;
-					} else {
-						ctxMap = ctx.getMap();
-					}
-					return Tuple3.of(subscription, contextId, ctxMap);
+					return loadContextFromDefaultTenant(contextId, subscription, tenant).onItem()
+							.transform(ctxMap -> Tuple3.of(subscription, contextId, ctxMap));
 
 				});
+	}
+
+	private Uni<Map<String, Object>> loadContextFromDefaultTenant(String contextId, Map<String, Object> subscription,
+			String tenant) {
+		String lookupId = contextId == null ? AppConstants.INTERNAL_NULL_KEY : contextId;
+		return connectionManager.executeQuery(null, "SELECT body FROM contexts WHERE id=$1", Tuple.of(lookupId), false)
+				.onItem().transformToUni(rows -> {
+					if (rows.size() > 0) {
+						return Uni.createFrom().item(rows.iterator().next().getJsonObject(0).getMap());
+					}
+					if (!AppConstants.INTERNAL_NULL_KEY.equals(lookupId)) {
+						logger.warn("Failed to read context " + lookupId + " for subscription "
+								+ getSubscriptionId(subscription) + " on tenant " + tenant
+								+ ". Falling back to default context.");
+						return connectionManager
+								.executeQuery(null, "SELECT body FROM contexts WHERE id=$1",
+										Tuple.of(AppConstants.INTERNAL_NULL_KEY), false)
+								.onItem().transform(defaultRows -> {
+									if (defaultRows.size() == 0) {
+										logger.error("Failed to read default context for subscription "
+												+ getSubscriptionId(subscription) + " on tenant " + tenant);
+										return null;
+									}
+									return defaultRows.iterator().next().getJsonObject(0).getMap();
+								});
+					}
+					logger.error("Failed to read default context for subscription " + getSubscriptionId(subscription)
+							+ " on tenant " + tenant);
+					return Uni.createFrom().item((Map<String, Object>) null);
+				});
+	}
+
+	@SuppressWarnings("unchecked")
+	private Map<String, Object> getContextFromDefaultContexts(Map<String, Object> contexts, String contextId,
+			Map<String, Object> subscription, String tenant) {
+		if (contexts == null) {
+			logger.error("Failed to read context for subscription " + getSubscriptionId(subscription) + " on tenant "
+					+ tenant);
+			return null;
+		}
+		Map<String, Object> ctxMap = (Map<String, Object>) contexts.get(contextId);
+		if (ctxMap == null) {
+			ctxMap = (Map<String, Object>) contexts.get(AppConstants.INTERNAL_NULL_KEY);
+			if (ctxMap == null) {
+				logger.error("Failed to read default context for subscription " + getSubscriptionId(subscription)
+						+ " on tenant " + tenant);
+			} else if (contextId != null) {
+				logger.warn("Failed to read context " + contextId + " for subscription "
+						+ getSubscriptionId(subscription) + " on tenant " + tenant
+						+ ". Falling back to default context.");
+			}
+		}
+		return ctxMap;
+	}
+
+	private Object getSubscriptionId(Map<String, Object> subscription) {
+		return subscription == null ? null : subscription.get(NGSIConstants.JSON_LD_ID);
 	}
 
 	public Uni<RowSet<Row>> getRegById(String tenant, String id) {

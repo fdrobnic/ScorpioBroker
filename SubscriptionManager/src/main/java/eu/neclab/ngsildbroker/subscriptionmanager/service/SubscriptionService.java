@@ -69,6 +69,7 @@ import io.quarkus.runtime.Startup;
 import io.quarkus.scheduler.Scheduled;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.tuples.Tuple2;
+import io.smallrye.mutiny.tuples.Tuple3;
 import io.smallrye.mutiny.tuples.Tuple4;
 import io.vertx.core.http.impl.headers.HeadersMultiMap;
 import io.vertx.core.json.JsonArray;
@@ -1818,22 +1819,21 @@ public class SubscriptionService implements CSourceHandler, BaseRequestHandler {
 	}
 
 	public Uni<Void> syncUpdateSubscription(String tenant, String subId) {
-		return subDAO.getSubscription(tenant, subId).onFailure().recoverWithItem(e -> {
+		return subDAO.loadSubscription(tenant, subId).onFailure().recoverWithItem(e -> {
 			synchronized (tableLock) {
 				tenant2subscriptionId2IntervalSubscription.remove(tenant, subId);
 				tenant2subscriptionId2Subscription.remove(tenant, subId);
 			}
-			return null;
-		}).onItem().transformToUni(rows -> {
-			if (rows == null || rows.size() == 0) {
+			return Tuple3.of(null, null, null);
+		}).onItem().transformToUni(t -> {
+			if (t == null || t.getItem1() == null || t.getItem3() == null) {
 				return Uni.createFrom().voidItem();
 			}
-			Row first = rows.iterator().next();
-			return ldService.parsePure(first.getJsonObject(1).getMap()).onItem().transformToUni(ctx -> {
+			return ldService.parsePure(t.getItem3().get(NGSIConstants.JSON_LD_CONTEXT)).onItem().transformToUni(ctx -> {
 				SubscriptionRequest request;
 				try {
-					request = new SubscriptionRequest(tenant, first.getJsonObject(0).getMap(), ctx);
-					request.setContextId(first.getString(2));
+					request = new SubscriptionRequest(tenant, t.getItem1(), ctx);
+					request.setContextId(t.getItem2());
 					request.getSubscription().addOtherHead(NGSIConstants.LINK_HEADER,
 							"<%s>; rel=\"http://www.w3.org/ns/json-ld#context\"; type=\"application/ld+json\""
 									.formatted(request.getSubscription().getJsonldContext()));
@@ -1894,6 +1894,9 @@ public class SubscriptionService implements CSourceHandler, BaseRequestHandler {
 
 	public void reloadSubscription(String tenant, String id) {
 		subDAO.loadSubscription(tenant, id).onItem().transformToUni(t -> {
+			if (t == null || t.getItem1() == null || t.getItem3() == null) {
+				return Uni.createFrom().voidItem();
+			}
 			return ldService.parsePure(t.getItem3().get(NGSIConstants.JSON_LD_CONTEXT)).onItem().transformToUni(ctx -> {
 				SubscriptionRequest request;
 				try {

@@ -753,6 +753,11 @@ class NGSIObject {
 		if (fromHasValue) {
 			return;
 		}
+		if (payloadType == AppConstants.ENTITY_ATTRS_UPDATE_PAYLOAD && hasValue && !isProperty && !isRelationship
+				&& !isGeoProperty && !isDateTime && !isLanguageProperty && !isVocabProperty && !isListProperty
+				&& !isListRelationship && !isLocalOnly && !isJsonProperty) {
+			isProperty = true;
+		}
 		System.err.println("DEBUG validateAttribute() :: expandedProperty=" + expandedProperty + ", activeProperty=" + activeProperty 
 			+ ", isProperty=" + isProperty + ", isRelationship=" + isRelationship + ", isGeoProperty=" + isGeoProperty 
 			+ ", isDateTime=" + isDateTime + ", isLanguageProperty=" + isLanguageProperty + ", isScalar=" + isScalar);

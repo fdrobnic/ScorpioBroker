@@ -170,9 +170,9 @@ public class DBUtil {
 					unis.add(connectionManager.executeQuery(null, sql, null, false).onItem()
 							.transform(rows -> Tuple2.of(AppConstants.INTERNAL_NULL_KEY, rows)));
 					while (it.hasNext()) {
-						unis.add(connectionManager.executeQuery(it.next().getString(0), sql, null, false).onItem()
-								.transform(
-										tenantReg -> Tuple2.of(AppConstants.INTERNAL_NULL_KEY, tenantReg)));
+						String tenant = it.next().getString(0);
+						unis.add(connectionManager.executeQuery(tenant, sql, null, false).onItem()
+								.transform(tenantReg -> Tuple2.of(tenant, tenantReg)));
 
 					}
 					return Uni.combine().all().unis(unis).with(list -> {

@@ -565,7 +565,7 @@ public class HistoryEntityService implements CSourceHandler {
 				Iterator<RegistrationEntry> it = regs.iterator();
 				while (it.hasNext()) {
 					RegistrationEntry regEntry = it.next();
-					if (regEntry.expiresAt() > System.currentTimeMillis()) {
+					if (regEntry.expiresAt() != -1 && regEntry.expiresAt() < System.currentTimeMillis()) {
 						it.remove();
 						continue;
 					}
@@ -604,10 +604,8 @@ public class HistoryEntityService implements CSourceHandler {
 							continue;
 					}
 
-					String propType = ((List<String>) ((List<Map<String, Object>>) entry.getValue()).get(0)
-							.get(NGSIConstants.JSON_LD_TYPE)).get(0);
 					Tuple2<Set<String>, Set<String>> matches;
-					if (propType.equals(NGSIConstants.NGSI_LD_RELATIONSHIP)) {
+					if (isRelationshipEntry(entry.getValue())) {
 						matches = regEntry.matches(entityId, originalTypes, null, entry.getKey(), originalScopes,
 								location);
 					} else {
@@ -712,6 +710,31 @@ public class HistoryEntityService implements CSourceHandler {
 			EntityTools.addSysAttrs(toStore, request.getSendTimestamp());
 		}
 		return Tuple2.of(toStore, cId2RemoteHostEntity.values());
+	}
+
+	private boolean isRelationshipEntry(Object entryValue) {
+		if (!(entryValue instanceof List<?> entries)) {
+			return false;
+		}
+		for (Object entry : entries) {
+			if (!(entry instanceof Map<?, ?> attrEntry)) {
+				continue;
+			}
+			Object typeObj = attrEntry.get(NGSIConstants.JSON_LD_TYPE);
+			if (typeObj instanceof List<?> types && !types.isEmpty()) {
+				Object type = types.get(0);
+				if (NGSIConstants.NGSI_LD_RELATIONSHIP.equals(type)
+						|| NGSIConstants.NGSI_LD_LISTRELATIONSHIP.equals(type)) {
+					return true;
+				}
+				return false;
+			}
+			if (attrEntry.containsKey(NGSIConstants.NGSI_LD_HAS_OBJECT)
+					|| attrEntry.containsKey(NGSIConstants.NGSI_LD_HAS_OBJECT_LIST)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public Uni<Void> handleRegistryChange(CSourceBaseRequest req) {

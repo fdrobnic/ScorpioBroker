@@ -289,32 +289,51 @@ public class EntityService implements CSourceHandler {
 			MultiMap toFrwd = HttpUtils.getHeadToFrwd(remoteHost.headers(), headersFromReq);
 			if (remoteHost.canDoSingleOp()) {
 				unis.add(prepareSplitUpEntityForSending(expanded, context).onItem().transformToUni(compacted -> {
-					Object payloadToSend = compacted.get(context.compactIri(request.getAttribName()));
+					String attrName = context.compactIri(request.getAttribName());
+					Object payloadToSend = compacted.get(attrName);
 					if (payloadToSend == null) {
 						payloadToSend = compacted;
 					}
 					logger.debug("Sending remote PATCH to {}/attrs/{} for entity {} with payload: {}",
- 						remoteHost.host(), context.compactIri(request.getAttribName()), entityId, payloadToSend);
+							remoteHost.host(), attrName, entityId, payloadToSend);
 					String body;
 					try {
 						body = JsonUtils.toString(payloadToSend);
 					} catch (IOException e) {
 						return Uni.createFrom().item(new NGSILDOperationResult(AppConstants.PARTIAL_UPDATE_REQUEST,
-									entityId, remoteHost.tenant()));
+								entityId, remoteHost.tenant()));
 					}
+					Set<Attrib> attribs = HttpUtils.getAttribsFromCompactedPayload(compacted);
 
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/" + entityId
-											+ "/attrs/" + context.compactIri(request.getAttribName()),
-									tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+											+ "/attrs/" + attrName,
+									remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure()
-							.transform((response, failure) -> {
-								return HttpUtils.handleWebResponse(response, failure, ArrayUtils.toArray(204),
-										remoteHost, AppConstants.PARTIAL_UPDATE_REQUEST, entityId,
-										HttpUtils.getAttribsFromCompactedPayload(compacted));
+							.transformToUni((response, failure) -> {
+								String retryEntityId = getIoTAgentRetryDeviceId(response, failure, entityId, entityId);
+								if (retryEntityId != null) {
+									logger.debug(
+											"Remote host {} did not find NGSI-LD entity id {}; retrying PATCH with device id {}",
+											remoteHost.host(), entityId, retryEntityId);
+									return HttpUtils
+											.connect(webClient,
+													remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/"
+															+ retryEntityId + "/attrs/" + attrName,
+													remoteHost.tenant(), AppConstants.PATCH_OP,
+													AppConstants.NGB_APPLICATION_JSON, null, toFrwd, body, viaHeaders,
+													remoteHost.cSourceAlias(), -1)
+											.onItemOrFailure()
+											.transform((retryResponse, retryFailure) -> HttpUtils.handleWebResponse(
+													retryResponse, retryFailure, ArrayUtils.toArray(204), remoteHost,
+													AppConstants.PARTIAL_UPDATE_REQUEST, entityId, attribs));
+								}
+								return Uni.createFrom().item(HttpUtils.handleWebResponse(response, failure,
+										ArrayUtils.toArray(204), remoteHost, AppConstants.PARTIAL_UPDATE_REQUEST,
+										entityId, attribs));
 							});
 				}));
 			}
@@ -342,8 +361,41 @@ public class EntityService implements CSourceHandler {
 			}));
 		}
 		return Uni.combine().all().unis(unis).with(list -> {
-			return getResult(list);
+			NGSILDOperationResult result = getResult(list);
+			result.setTenant(tenant);
+			return result;
 		});
+	}
+
+	private String getIoTAgentRetryDeviceId(HttpResponse<Buffer> response, Throwable failure, String entityId,
+			String remoteEntityId) {
+		if (failure != null || response == null || !entityId.equals(remoteEntityId)) {
+			return null;
+		}
+		int statusCode = response.statusCode();
+		if (statusCode < 400 || statusCode >= 500) {
+			return null;
+		}
+		String body = response.bodyAsString();
+		if (body == null || !body.contains("No device was found with id:") || !body.contains(entityId)) {
+			return null;
+		}
+		String deviceId = extractShortDeviceId(entityId);
+		if (deviceId == null || deviceId.equals(entityId)) {
+			return null;
+		}
+		return deviceId;
+	}
+
+	private String extractShortDeviceId(String entityId) {
+		if (entityId == null || !entityId.startsWith("urn:ngsi-ld:")) {
+			return entityId;
+		}
+		int lastColon = entityId.lastIndexOf(':');
+		if (lastColon == -1 || lastColon == entityId.length() - 1) {
+			return entityId;
+		}
+		return entityId.substring(lastColon + 1);
 	}
 
 	public Uni<Boolean> patchToEndPoint(String entityId, HttpServerRequest request, Map<String, Object> inputBody,
@@ -398,7 +450,7 @@ public class EntityService implements CSourceHandler {
 			unis.add(HttpUtils
 					.connect(webClient,
 							url,
-							tenant, AppConstants.DELETE_OP, null, queryParams,
+							remoteHost.tenant(), AppConstants.DELETE_OP, null, queryParams,
 							toFrwd, null, viaHeaders,
 							remoteHost.cSourceAlias(), -1)
 					.onItemOrFailure().transform((response, failure) -> {
@@ -484,7 +536,7 @@ public class EntityService implements CSourceHandler {
 				unis.add(HttpUtils
 						.connect(webClient,
 								url,
-								tenant, AppConstants.DELETE_OP, null, null,
+								remoteHost.tenant(), AppConstants.DELETE_OP, null, null,
 								toFrwd, null, viaHeaders,
 								remoteHost.cSourceAlias(), -1)
 						.onItemOrFailure().transform((response, failure) -> {
@@ -505,7 +557,7 @@ public class EntityService implements CSourceHandler {
 				unis.add(HttpUtils
 						.connect(webClient,
 								remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_DELETE,
-								tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+								remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 								toFrwd, body, viaHeaders,
 								remoteHost.cSourceAlias(), -1)
 						.onItemOrFailure()
@@ -599,7 +651,7 @@ public class EntityService implements CSourceHandler {
 									.connect(webClient,
 											remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/"
 													+ entityId + "/attrs",
-											tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+											remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 											toFrwd, body, viaHeaders,
 											remoteHost.cSourceAlias(), -1)
 									.onItemOrFailure()
@@ -626,7 +678,7 @@ public class EntityService implements CSourceHandler {
 							return HttpUtils
 									.connect(webClient,
 											remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_UPDATE,
-											tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+											remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 											toFrwd, body, viaHeaders,
 											remoteHost.cSourceAlias(), -1)
 									.onItemOrFailure().transform((response, failure) -> {
@@ -691,7 +743,7 @@ public class EntityService implements CSourceHandler {
 				return HttpUtils
 						.connect(webClient,
 								remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/" + entityId + "/attrs",
-								tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+								remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 								toFrwd, body, viaHeaders,
 								remoteHost.cSourceAlias(), -1)
 						.onItemOrFailure()
@@ -789,7 +841,7 @@ public class EntityService implements CSourceHandler {
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT,
-									tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+									remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure()
@@ -812,7 +864,7 @@ public class EntityService implements CSourceHandler {
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_CREATE,
-									tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+									remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure()
@@ -906,7 +958,7 @@ public class EntityService implements CSourceHandler {
 				Iterator<RegistrationEntry> it = regs.iterator();
 				while (it.hasNext()) {
 					RegistrationEntry regEntry = it.next();
-					if (regEntry.expiresAt() > System.currentTimeMillis()) {
+					if (regEntry.expiresAt() != -1 && regEntry.expiresAt() < System.currentTimeMillis()) {
 						it.remove();
 						continue;
 					}
@@ -943,10 +995,8 @@ public class EntityService implements CSourceHandler {
 							continue;
 					}
 
-					String propType = ((List<String>) ((List<Map<String, Object>>) entry.getValue()).get(0)
-							.get(NGSIConstants.JSON_LD_TYPE)).get(0);
 					Tuple2<Set<String>, Set<String>> matches;
-					if (propType.equals(NGSIConstants.NGSI_LD_RELATIONSHIP)) {
+					if (isRelationshipEntry(entry.getValue())) {
 						matches = regEntry.matches(entityId, originalTypes, null, entry.getKey(), originalScopes,
 								location);
 					} else {
@@ -1077,6 +1127,31 @@ public class EntityService implements CSourceHandler {
 			EntityTools.addSysAttrs(toStore, request.getSendTimestamp());
 		}
 		return Tuple2.of(toStore, cId2RemoteHostEntity.values());
+	}
+
+	private boolean isRelationshipEntry(Object entryValue) {
+		if (!(entryValue instanceof List<?> entries)) {
+			return false;
+		}
+		for (Object entry : entries) {
+			if (!(entry instanceof Map<?, ?> attrEntry)) {
+				continue;
+			}
+			Object typeObj = attrEntry.get(NGSIConstants.JSON_LD_TYPE);
+			if (typeObj instanceof List<?> types && !types.isEmpty()) {
+				Object type = types.get(0);
+				if (NGSIConstants.NGSI_LD_RELATIONSHIP.equals(type)
+						|| NGSIConstants.NGSI_LD_LISTRELATIONSHIP.equals(type)) {
+					return true;
+				}
+				return false;
+			}
+			if (attrEntry.containsKey(NGSIConstants.NGSI_LD_HAS_OBJECT)
+					|| attrEntry.containsKey(NGSIConstants.NGSI_LD_HAS_OBJECT_LIST)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public Uni<Void> handleRegistryChange(CSourceBaseRequest req) {
@@ -1211,7 +1286,7 @@ public class EntityService implements CSourceHandler {
 						return HttpUtils
 								.connect(webClient,
 										remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_CREATE,
-										tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+										remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 										toFrwd, body, viaHeaders,
 										remoteHost.cSourceAlias(), -1)
 								.onItemOrFailure()
@@ -1235,7 +1310,7 @@ public class EntityService implements CSourceHandler {
 							return HttpUtils
 									.connect(webClient,
 											remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT,
-											tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+											remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 											toFrwd, body, viaHeaders,
 											remoteHost.cSourceAlias(), -1)
 									.onItemOrFailure()
@@ -1379,7 +1454,7 @@ public class EntityService implements CSourceHandler {
 						return HttpUtils
 								.connect(webClient,
 										remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_UPDATE,
-										tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+										remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 										toFrwd, body, viaHeaders,
 										remoteHost.cSourceAlias(), -1)
 								.onItemOrFailure()
@@ -1405,7 +1480,7 @@ public class EntityService implements CSourceHandler {
 											remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/"
 													+ entity.get(NGSIConstants.JSON_LD_ID) + "/"
 													+ NGSIConstants.QUERY_PARAMETER_ATTRS,
-											tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+											remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 											toFrwd, body, viaHeaders,
 											remoteHost.cSourceAlias(), -1)
 									.onItemOrFailure()
@@ -1624,7 +1699,7 @@ public class EntityService implements CSourceHandler {
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_UPSERT,
-									tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+									remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure().transform((response, failure) -> {
@@ -1649,7 +1724,7 @@ public class EntityService implements CSourceHandler {
 										remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/"
 												+ entity.get(NGSIConstants.JSON_LD_ID) + "/"
 												+ NGSIConstants.QUERY_PARAMETER_ATTRS,
-										tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+										remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 										toFrwd, body, viaHeaders,
 										remoteHost.cSourceAlias(), -1)
 								.onItemOrFailure()
@@ -1658,7 +1733,7 @@ public class EntityService implements CSourceHandler {
 										return HttpUtils
 												.connect(webClient,
 														remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT,
-														tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON,
+														remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON,
 														null,
 														toFrwd, body, viaHeaders,
 														remoteHost.cSourceAlias(), -1)
@@ -1729,7 +1804,7 @@ public class EntityService implements CSourceHandler {
 				unis.add(HttpUtils
 						.connect(webClient,
 								remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_DELETE,
-								tenant, AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
+								remoteHost.tenant(), AppConstants.POST_OP, AppConstants.NGB_APPLICATION_JSON, null,
 								toFrwd, body, viaHeaders,
 								remoteHost.cSourceAlias(), -1)
 						.onItemOrFailure().transform((response, failure) -> {
@@ -1744,7 +1819,7 @@ public class EntityService implements CSourceHandler {
 					singleUnis.add(HttpUtils
 							.connect(webClient,
 									url,
-									tenant, AppConstants.DELETE_OP, null, null,
+									remoteHost.tenant(), AppConstants.DELETE_OP, null, null,
 									toFrwd, null, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure().transform((response, failure) -> {
@@ -1844,7 +1919,7 @@ public class EntityService implements CSourceHandler {
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/" + entityId,
-									tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+									remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure()
@@ -1867,7 +1942,7 @@ public class EntityService implements CSourceHandler {
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_CREATE,
-									tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+									remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure()
@@ -2032,7 +2107,7 @@ public class EntityService implements CSourceHandler {
 					return HttpUtils
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/" + entityId,
-									tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+									remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure()
@@ -2129,7 +2204,7 @@ public class EntityService implements CSourceHandler {
 							.connect(webClient,
 									remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/" + entityId + "/"
 											+ "attrs" + "/" + attrId,
-									tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+									remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 									toFrwd, body, viaHeaders,
 									remoteHost.cSourceAlias(), -1)
 							.onItemOrFailure().transform((response, failure) -> {
@@ -2277,7 +2352,7 @@ public class EntityService implements CSourceHandler {
 						return HttpUtils
 								.connect(webClient,
 										remoteHost.host() + NGSIConstants.ENDPOINT_BATCH_MERGE,
-										tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+										remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 										toFrwd, body, viaHeaders,
 										remoteHost.cSourceAlias(), -1)
 								.onItemOrFailure()
@@ -2303,7 +2378,7 @@ public class EntityService implements CSourceHandler {
 											remoteHost.host() + NGSIConstants.NGSI_LD_ENTITIES_ENDPOINT + "/"
 													+ entity.get(NGSIConstants.JSON_LD_ID) + "/"
 													+ NGSIConstants.QUERY_PARAMETER_ATTRS,
-											tenant, AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
+											remoteHost.tenant(), AppConstants.PATCH_OP, AppConstants.NGB_APPLICATION_JSON, null,
 											toFrwd, body, viaHeaders,
 											remoteHost.cSourceAlias(), -1)
 									.onItemOrFailure()

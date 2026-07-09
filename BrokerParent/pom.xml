@@ -5,7 +5,7 @@
 	<groupId>eu.neclab.ngsildbroker</groupId>
 	<artifactId>broker-parent</artifactId>
 	<name>BrokerParent</name>
-	<version>6.0.1-SNAPSHOT</version>
+	<version>6.0.2-SNAPSHOT</version>
 	<packaging>pom</packaging>
 	<properties>
 		<compiler-plugin.version>3.14.0</compiler-plugin.version>
@@ -29,6 +29,10 @@
 				<artifactId>quarkus-maven-plugin</artifactId>
 				<version>${quarkus.platform.version}</version>
 				<extensions>true</extensions>
+				<configuration>
+					<!-- Java 24+: jboss-threads thread-local reset needs java.lang opened -->
+					<jvmArgs>--enable-native-access=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED</jvmArgs>
+				</configuration>
 				<executions>
 					<execution>
 						<goals>
